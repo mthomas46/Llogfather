@@ -1,0 +1,6 @@
+llamalyticshub:
+  url: http://localhost:5000
+  api_key: changeme
+
+github:
+  token: your_github_token_here 

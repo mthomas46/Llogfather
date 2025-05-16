@@ -1,6 +1,7 @@
 import re
 from collections import Counter, defaultdict
 from datetime import datetime
+import requests
 
 def parse_log_levels_and_timestamps(lines):
     log_level_pattern = re.compile(r"\\b(INFO|ERROR|WARNING|DEBUG|CRITICAL)\\b", re.IGNORECASE)
@@ -127,7 +128,21 @@ def get_code_snippet(file_content, line, context=5):
     snippet = lines[start:end]
     return '\n'.join(f"{i+1}: {l}" for i, l in enumerate(snippet, start=start))
 
-def analyze_log_file(log_file_path, code_context=None):
+def summarize_relationship_with_llm(log_findings, report_context, llm_url="http://localhost:5000/generate/text", api_key=None):
+    prompt = f"Given the following service log findings and a cached code review report, summarize any relationships, root causes, or actionable insights that connect the two.\n\nService Log Findings:\n{log_findings}\n\nCached Report:\n{report_context[:2000]}"  # Truncate for prompt size
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["X-API-KEY"] = api_key
+    try:
+        resp = requests.post(llm_url, json={"prompt": prompt}, headers=headers, timeout=60)
+        if resp.status_code == 200:
+            return resp.json().get("response", "(No summary returned)")
+        else:
+            return f"(LLM error: {resp.status_code} {resp.text})"
+    except Exception as e:
+        return f"(LLM request failed: {e})"
+
+def analyze_log_file(log_file_path, code_context=None, report_context=None, llm_api_key=None):
     """
     Analyze the log file and return a markdown report as a string.
     Optionally use code_context for deeper analysis.
@@ -186,6 +201,24 @@ def analyze_log_file(log_file_path, code_context=None):
                             report.append(f"#### Code Snippet for {entry['file']} line {entry['line']}\n```")
                             report.append(snippet)
                             report.append("```")
+    # If report_context is provided, include it and relate to log findings
+    if report_context:
+        report.append("\n## Related Cached Report Context\n")
+        report.append("---\n**Cached Report Excerpt:**\n\n" + report_context[:1000] + ("..." if len(report_context) > 1000 else ""))
+        # Simple heuristic: check if any error types from logs appear in the report context
+        related = []
+        for err in error_counter:
+            if err in report_context:
+                related.append(err)
+        if related:
+            report.append(f"\n**The following error types from the logs were also mentioned in the cached report:**\n- " + ", ".join(related))
+        else:
+            report.append("\nNo direct overlap found between log errors and cached report.")
+        # LLM summary section
+        log_findings_summary = '\n'.join(report)
+        llm_summary = summarize_relationship_with_llm(log_findings_summary, report_context, api_key=llm_api_key)
+        report.append("\n## LLM Summary: Relationship Between Logs and Cached Report\n")
+        report.append(llm_summary)
     if code_context:
         report.append("\n## Code Context (from GitHub)\n")
         if isinstance(code_context, dict):

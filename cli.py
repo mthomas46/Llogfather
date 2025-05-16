@@ -5,7 +5,7 @@ from rich.panel import Panel
 import questionary
 from config import load_config, save_config
 from log_analysis import analyze_log_file
-from github_context import fetch_code_context
+from github_context import fetch_code_context, fetch_file_content, cache_github_files
 import requests
 import threading
 import time
@@ -31,6 +31,7 @@ def main_menu():
                 "View Config",
                 "Call LlamalyticsHub API Endpoints",
                 "Start Log Watcher",
+                "Cache GitHub Files",
                 "Exit"
             ]
         ).ask()
@@ -46,6 +47,8 @@ def main_menu():
             call_llamalyticshub_menu()
         elif choice == "Start Log Watcher":
             start_log_watcher_menu()
+        elif choice == "Cache GitHub Files":
+            cache_github_files_menu()
         elif choice == "Exit":
             sys.exit(0)
 
@@ -59,7 +62,18 @@ def analyze_log_file_flow():
     code_context = None
     if github_token and repo:
         code_context = fetch_code_context(repo, github_token)
-    report = analyze_log_file(log_file, code_context)
+    cache_dir = "cached_reports"
+    report_context = None
+    if os.path.isdir(cache_dir):
+        cached_reports = [f for f in os.listdir(cache_dir) if f.endswith('.md')]
+        if cached_reports:
+            use_report = questionary.confirm("Use a cached report as context for log analysis?", default=False).ask()
+            if use_report:
+                report_name = questionary.select("Select cached report:", choices=cached_reports).ask()
+                with open(os.path.join(cache_dir, report_name), "r", encoding="utf-8") as f:
+                    report_context = f.read()
+    llm_api_key = config.get("llamalyticshub_api_key")
+    report = analyze_log_file(log_file, code_context, report_context, llm_api_key=llm_api_key)
     report_path = os.path.join(output_dir, f"log_report_{os.path.basename(log_file)}.md")
     with open(report_path, "w") as f:
         f.write(report)
@@ -202,6 +216,30 @@ def start_log_watcher_menu():
     input("Press Enter to stop log watcher and return to menu...")
     log_watcher_stop.set()
     log_watcher_thread.join()
+
+def cache_github_files_menu():
+    repo = questionary.text("GitHub repo (user/repo):").ask()
+    config = load_config()
+    github_token = config.get("github_token")
+    branch_or_pr = questionary.select(
+        "Cache files from branch or PR?",
+        choices=["Branch", "PR"]
+    ).ask()
+    branch = pr_number = None
+    if branch_or_pr == "Branch":
+        branch = questionary.text("Branch name (default: main):", default="main").ask()
+    else:
+        pr_number = questionary.text("PR number:").ask()
+    # Fetch file list for selection
+    code_context = fetch_code_context(repo, github_token)
+    file_choices = code_context.get("files", [])
+    if not file_choices:
+        file_paths = questionary.text("Enter file paths to cache (comma-separated):").ask().split(",")
+        file_paths = [f.strip() for f in file_paths if f.strip()]
+    else:
+        file_paths = questionary.checkbox("Select files to cache:", choices=file_choices).ask()
+    cache_github_files(repo, github_token, file_paths, branch=branch, pr_number=pr_number)
+    input("Press Enter to return to menu...")
 
 if __name__ == "__main__":
     main_menu() 
