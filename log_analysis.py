@@ -142,7 +142,23 @@ def summarize_relationship_with_llm(log_findings, report_context, llm_url="http:
     except Exception as e:
         return f"(LLM request failed: {e})"
 
-def analyze_log_file(log_file_path, code_context=None, report_context=None, llm_api_key=None):
+def suggest_patch_with_llm(error_line, code_files_context, llm_url="http://localhost:5000/generate/text", api_key=None):
+    # Use the LLM to suggest a patch for the error/warning, using code files as context
+    code_context_str = "\n\n".join(f"File: {f['filename']}\n{f['content'][:1000]}" for f in code_files_context)
+    prompt = f"Given the following error or warning from a service log, and the following code files, suggest a code patch or fix for the issue.\n\nError/Warning:\n{error_line}\n\nCode Files:\n{code_context_str}"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["X-API-KEY"] = api_key
+    try:
+        resp = requests.post(llm_url, json={"prompt": prompt}, headers=headers, timeout=90)
+        if resp.status_code == 200:
+            return resp.json().get("response", "(No patch suggestion returned)")
+        else:
+            return f"(LLM error: {resp.status_code} {resp.text})"
+    except Exception as e:
+        return f"(LLM request failed: {e})"
+
+def analyze_log_file(log_file_path, code_context=None, report_context=None, llm_api_key=None, code_files_context=None):
     """
     Analyze the log file and return a markdown report as a string.
     Optionally use code_context for deeper analysis.
@@ -163,13 +179,13 @@ def analyze_log_file(log_file_path, code_context=None, report_context=None, llm_
             by_hour[ts.replace(minute=0, second=0, microsecond=0)] += 1
         report.append("\n## Log Frequency by Hour\n" + '\n'.join(f"- {hour}: {cnt}" for hour, cnt in sorted(by_hour.items())))
     # Error summary
-    error_lines = [l for l in lines if 'error' in l.lower() or 'exception' in l.lower()]
-    error_types = [re.findall(r'(\w+Error|Exception)', l) for l in error_lines]
+    error_lines = [l for l in lines if 'error' in l.lower() or 'warning' in l.lower() or 'exception' in l.lower()]
+    error_types = [re.findall(r'(\w+Error|Exception|Warning)', l) for l in error_lines]
     error_types_flat = [item for sublist in error_types for item in sublist]
     error_counter = Counter(error_types_flat)
-    report.append(f"\n## Error Summary\n- Total lines: {len(lines)}\n- Error/Exception lines: {len(error_lines)}\n")
+    report.append(f"\n## Error Summary\n- Total lines: {len(lines)}\n- Error/Warning/Exception lines: {len(error_lines)}\n")
     if error_counter:
-        report.append("### Top Error Types\n")
+        report.append("### Top Error/Warning Types\n")
         for err, count in error_counter.most_common(10):
             report.append(f"- {err}: {count}")
     # Stack trace analysis
@@ -219,6 +235,12 @@ def analyze_log_file(log_file_path, code_context=None, report_context=None, llm_
         llm_summary = summarize_relationship_with_llm(log_findings_summary, report_context, api_key=llm_api_key)
         report.append("\n## LLM Summary: Relationship Between Logs and Cached Report\n")
         report.append(llm_summary)
+    # LLM patch suggestions for errors/warnings
+    if code_files_context:
+        report.append("\n## LLM Patch Suggestions for Errors/Warnings\n")
+        for err_line in error_lines:
+            patch = suggest_patch_with_llm(err_line, code_files_context, api_key=llm_api_key)
+            report.append(f"### Patch Suggestion for: {err_line.strip()}\n{patch}\n")
     if code_context:
         report.append("\n## Code Context (from GitHub)\n")
         if isinstance(code_context, dict):

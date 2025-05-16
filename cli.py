@@ -66,6 +66,7 @@ def analyze_log_file_flow():
     code_context = None
     if github_token and repo:
         code_context = fetch_code_context(repo, github_token)
+    # Optionally use cached report as context
     cache_dir = "cached_reports"
     report_context = None
     if os.path.isdir(cache_dir):
@@ -76,8 +77,26 @@ def analyze_log_file_flow():
                 report_name = questionary.select("Select cached report:", choices=cached_reports).ask()
                 with open(os.path.join(cache_dir, report_name), "r", encoding="utf-8") as f:
                     report_context = f.read()
+    # Optionally use cached code files as context
+    cached_code_dir = "cached_github_files"
+    code_files_context = []
+    if os.path.isdir(cached_code_dir):
+        repos = [d for d in os.listdir(cached_code_dir) if os.path.isdir(os.path.join(cached_code_dir, d))]
+        if repos:
+            use_code = questionary.confirm("Use cached code files as context?", default=False).ask()
+            if use_code:
+                repo_choice = questionary.select("Select cached repo:", choices=repos).ask()
+                repo_path = os.path.join(cached_code_dir, repo_choice)
+                refs = [d for d in os.listdir(repo_path) if os.path.isdir(os.path.join(repo_path, d))]
+                ref_choice = questionary.select("Select branch/PR:", choices=refs).ask()
+                ref_path = os.path.join(repo_path, ref_choice)
+                files = [f for f in os.listdir(ref_path) if os.path.isfile(os.path.join(ref_path, f))]
+                file_choices = questionary.checkbox("Select code files to use as context:", choices=files).ask()
+                for fname in file_choices:
+                    with open(os.path.join(ref_path, fname), "r", encoding="utf-8") as f:
+                        code_files_context.append({"filename": fname, "content": f.read()})
     llm_api_key = config.get("llamalyticshub_api_key")
-    report = analyze_log_file(log_file, code_context, report_context, llm_api_key=llm_api_key)
+    report = analyze_log_file(log_file, code_context, report_context, llm_api_key=llm_api_key, code_files_context=code_files_context)
     report_path = os.path.join(output_dir, f"log_report_{os.path.basename(log_file)}.md")
     with open(report_path, "w") as f:
         f.write(report)
