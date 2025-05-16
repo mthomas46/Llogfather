@@ -10,6 +10,7 @@ import requests
 import threading
 import time
 import shutil
+import re
 
 console = Console()
 
@@ -34,6 +35,7 @@ def main_menu():
                 "Start Log Watcher",
                 "Cache GitHub Files",
                 "Manage Cached GitHub Files",
+                "Jira Issue Management",
                 "Exit"
             ]
         ).ask()
@@ -53,6 +55,8 @@ def main_menu():
             cache_github_files_menu()
         elif choice == "Manage Cached GitHub Files":
             manage_cached_github_files_menu()
+        elif choice == "Jira Issue Management":
+            jira_issue_management_menu()
         elif choice == "Exit":
             sys.exit(0)
 
@@ -101,6 +105,54 @@ def analyze_log_file_flow():
     with open(report_path, "w") as f:
         f.write(report)
     console.print(f"[green]Report saved to {report_path}[/green]")
+
+    # --- Create a report of suggested Jira tickets ---
+    ticket_report_path = os.path.join(output_dir, f"suggested_tickets_{os.path.basename(log_file)}.md")
+    patch_sections = re.findall(r"### Patch Suggestion for: (.*?)\n(.*?)(?=\n### Patch Suggestion for:|\Z)", report, re.DOTALL)
+    if patch_sections:
+        with open(ticket_report_path, "w") as tf:
+            tf.write(f"# Suggested Jira Tickets for {os.path.basename(log_file)}\n\n")
+            for idx, (error_summary, patch) in enumerate(patch_sections, 1):
+                tf.write(f"## Ticket {idx}\n")
+                tf.write(f"**Summary:** {error_summary.strip()[:100]}\n\n")
+                tf.write(f"**Description:**\n\n{patch.strip()[:2000]}\n\n")
+        console.print(f"[yellow]Suggested Jira tickets report saved to {ticket_report_path}[/yellow]")
+    else:
+        console.print("[yellow]No patch suggestions found for Jira ticket report.[/yellow]")
+
+    # --- Prompt user for next action ---
+    next_action = questionary.select(
+        "What would you like to do next?",
+        choices=[
+            "Just create the ticket report",
+            "Create tickets in Jira",
+            "Both",
+            "Nothing"
+        ]
+    ).ask()
+
+    jira_url = get_config_value("JIRASSICPACK_URL", "http://localhost:5050")
+    if next_action in ["Create tickets in Jira", "Both"] and patch_sections:
+        project = questionary.text("Jira project key for ticket creation (or leave blank to skip):").ask()
+        if project:
+            # Let user select which tickets to create
+            ticket_choices = [f"{error_summary.strip()[:100]}" for error_summary, _ in patch_sections]
+            selected = questionary.checkbox(
+                "Select which tickets to create in Jira:", choices=ticket_choices
+            ).ask()
+            for (error_summary, patch), label in zip(patch_sections, ticket_choices):
+                if label in selected:
+                    summary = error_summary.strip()[:100]
+                    description = patch.strip()[:2000]
+                    issuetype = questionary.text("Issue type (default: Task):", default="Task").ask()
+                    payload = {
+                        "project": project,
+                        "summary": summary,
+                        "description": description,
+                        "issuetype": issuetype
+                    }
+                    resp = requests.post(f"{jira_url}/jira/ticket", json=payload)
+                    console.print(f"[yellow]Jira ticket creation response:[/yellow] {resp.json()}")
     input("Press Enter to return to menu...")
 
 def configure_github_token():
@@ -318,6 +370,51 @@ def manage_cached_github_files_menu():
             console.print(f"[red]Deleted all cached files for {repo}/{ref}.[/red]")
             break
     input("Press Enter to return to menu...")
+
+def jira_issue_management_menu():
+    jira_url = get_config_value("JIRASSICPACK_URL", "http://localhost:5050")
+    while True:
+        action = questionary.select(
+            "Jira Issue Management:",
+            choices=[
+                "Create Issue",
+                "Update Issue",
+                "Get Issue",
+                "Search Issues",
+                "Back"
+            ]
+        ).ask()
+        if action == "Back":
+            break
+        elif action == "Create Issue":
+            project = questionary.text("Project key (e.g. ABC):").ask()
+            summary = questionary.text("Summary:").ask()
+            description = questionary.text("Description:").ask()
+            issuetype = questionary.text("Issue type (default: Task):", default="Task").ask()
+            payload = {
+                "project": project,
+                "summary": summary,
+                "description": description,
+                "issuetype": issuetype
+            }
+            resp = requests.post(f"{jira_url}/jira/ticket", json=payload)
+            console.print(resp.json())
+        elif action == "Update Issue":
+            issue_id = questionary.text("Issue ID (e.g. ABC-123):").ask()
+            field_key = questionary.text("Field to update (e.g. summary):").ask()
+            field_value = questionary.text("New value:").ask()
+            payload = {"fields": {field_key: field_value}}
+            resp = requests.put(f"{jira_url}/jira/ticket/{issue_id}", json=payload)
+            console.print(resp.json())
+        elif action == "Get Issue":
+            issue_id = questionary.text("Issue ID (e.g. ABC-123):").ask()
+            resp = requests.get(f"{jira_url}/jira/ticket/{issue_id}")
+            console.print(resp.json())
+        elif action == "Search Issues":
+            jql = questionary.text("JQL query (e.g. project=ABC AND status=Open):").ask()
+            resp = requests.get(f"{jira_url}/jira/search", params={"jql": jql})
+            console.print(resp.json())
+        input("Press Enter to return to Jira menu...")
 
 if __name__ == "__main__":
     main_menu() 
