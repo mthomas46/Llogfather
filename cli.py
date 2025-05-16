@@ -7,10 +7,15 @@ from config import load_config, save_config
 from log_analysis import analyze_log_file
 from github_context import fetch_code_context
 import requests
+import threading
+import time
 
 console = Console()
 
 LLAMALYTICSHUB_URL = os.environ.get("LLAMALYTICSHUB_URL", "http://localhost:5000")
+
+log_watcher_thread = None
+log_watcher_stop = threading.Event()
 
 def print_banner():
     console.print(Panel("Llogfather Log Analysis CLI", style="bold magenta"))
@@ -25,6 +30,7 @@ def main_menu():
                 "Configure GitHub Token",
                 "View Config",
                 "Call LlamalyticsHub API Endpoints",
+                "Start Log Watcher",
                 "Exit"
             ]
         ).ask()
@@ -38,6 +44,8 @@ def main_menu():
             input("Press Enter to return to menu...")
         elif choice == "Call LlamalyticsHub API Endpoints":
             call_llamalyticshub_menu()
+        elif choice == "Start Log Watcher":
+            start_log_watcher_menu()
         elif choice == "Exit":
             sys.exit(0)
 
@@ -77,6 +85,8 @@ def call_llamalyticshub_menu():
         ("/reports/<report_name>", "GET"),
         ("/logs", "GET"),
     ]
+    cache_dir = "cached_reports"
+    os.makedirs(cache_dir, exist_ok=True)
     while True:
         choice = questionary.select(
             "LlamalyticsHub API Endpoints:",
@@ -122,11 +132,23 @@ def call_llamalyticshub_menu():
             console.print(reports)
         elif choice == "/reports/<report_name>":
             report_name = questionary.text("Report filename (e.g. my_report.md):").ask()
-            resp = requests.get(f"{url}/reports/{report_name}", headers=headers)
-            if resp.status_code == 200:
-                console.print(resp.text)
+            cache_path = os.path.join(cache_dir, report_name)
+            use_cache = False
+            if os.path.exists(cache_path):
+                use_cache = questionary.confirm(f"Cached report found. Use cached version?", default=True).ask()
+            if use_cache:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                console.print(content)
             else:
-                console.print(resp.json())
+                resp = requests.get(f"{url}/reports/{report_name}", headers=headers)
+                if resp.status_code == 200:
+                    content = resp.text
+                    with open(cache_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    console.print(content)
+                else:
+                    console.print(resp.json())
         elif choice == "/logs":
             resp = requests.get(f"{url}/logs", headers=headers)
             if resp.status_code == 200:
@@ -134,6 +156,52 @@ def call_llamalyticshub_menu():
             else:
                 console.print(resp.json())
         input("Press Enter to return to endpoint menu...")
+
+def start_log_watcher():
+    """
+    Polls /logs endpoint every 10 seconds, extracts new errors/warnings, and appends to log_watcher.md.
+    """
+    config = load_config()
+    api_key = config.get("llamalyticshub_api_key", "changeme")
+    headers = {"X-API-KEY": api_key}
+    url = LLAMALYTICSHUB_URL.rstrip("/") + "/logs"
+    last_seen = set()
+    log_file = "log_watcher.md"
+    console.print(f"[yellow]Log watcher started. Polling {url} every 10 seconds. Press Enter in the main menu to stop.[/yellow]")
+    with open(log_file, "a") as f:
+        f.write(f"# Log Watcher Report\n\n")
+    while not log_watcher_stop.is_set():
+        try:
+            resp = requests.get(url, headers=headers)
+            if resp.status_code == 200:
+                lines = resp.text.splitlines()
+                new_entries = []
+                for line in lines:
+                    if ("error" in line.lower() or "warning" in line.lower()) and line not in last_seen:
+                        new_entries.append(line)
+                        last_seen.add(line)
+                if new_entries:
+                    with open(log_file, "a") as f:
+                        for entry in new_entries:
+                            f.write(entry + "\n")
+            else:
+                console.print(f"[red]Failed to fetch logs: {resp.status_code}[/red]")
+        except Exception as e:
+            console.print(f"[red]Exception in log watcher: {e}[/red]")
+        time.sleep(10)
+    console.print("[yellow]Log watcher stopped.[/yellow]")
+
+def start_log_watcher_menu():
+    global log_watcher_thread, log_watcher_stop
+    if log_watcher_thread and log_watcher_thread.is_alive():
+        console.print("[yellow]Log watcher is already running.[/yellow]")
+        return
+    log_watcher_stop.clear()
+    log_watcher_thread = threading.Thread(target=start_log_watcher, daemon=True)
+    log_watcher_thread.start()
+    input("Press Enter to stop log watcher and return to menu...")
+    log_watcher_stop.set()
+    log_watcher_thread.join()
 
 if __name__ == "__main__":
     main_menu() 

@@ -1,3 +1,9 @@
 rich
 questionary
-requests 
+requests
+loguru
+python-dotenv
+pyyaml
+PyGithub
+marshmallow
+textual 
