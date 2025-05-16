@@ -9,6 +9,7 @@ from github_context import fetch_code_context, fetch_file_content, cache_github_
 import requests
 import threading
 import time
+import shutil
 
 console = Console()
 
@@ -32,6 +33,7 @@ def main_menu():
                 "Call LlamalyticsHub API Endpoints",
                 "Start Log Watcher",
                 "Cache GitHub Files",
+                "Manage Cached GitHub Files",
                 "Exit"
             ]
         ).ask()
@@ -49,6 +51,8 @@ def main_menu():
             start_log_watcher_menu()
         elif choice == "Cache GitHub Files":
             cache_github_files_menu()
+        elif choice == "Manage Cached GitHub Files":
+            manage_cached_github_files_menu()
         elif choice == "Exit":
             sys.exit(0)
 
@@ -239,6 +243,61 @@ def cache_github_files_menu():
     else:
         file_paths = questionary.checkbox("Select files to cache:", choices=file_choices).ask()
     cache_github_files(repo, github_token, file_paths, branch=branch, pr_number=pr_number)
+    input("Press Enter to return to menu...")
+
+def manage_cached_github_files_menu():
+    cache_root = "cached_github_files"
+    if not os.path.isdir(cache_root):
+        console.print("[yellow]No cached GitHub files found.[/yellow]")
+        input("Press Enter to return to menu...")
+        return
+    # List repos
+    repos = [d for d in os.listdir(cache_root) if os.path.isdir(os.path.join(cache_root, d))]
+    if not repos:
+        console.print("[yellow]No cached GitHub repos found.[/yellow]")
+        input("Press Enter to return to menu...")
+        return
+    repo = questionary.select("Select cached repo:", choices=repos + ["Back"]).ask()
+    if repo == "Back":
+        return
+    repo_path = os.path.join(cache_root, repo)
+    # List branches/PRs
+    refs = [d for d in os.listdir(repo_path) if os.path.isdir(os.path.join(repo_path, d))]
+    ref = questionary.select("Select branch/PR:", choices=refs + ["Back"]).ask()
+    if ref == "Back":
+        return
+    ref_path = os.path.join(repo_path, ref)
+    # List files
+    files = [f for f in os.listdir(ref_path) if os.path.isfile(os.path.join(ref_path, f))]
+    if not files:
+        console.print("[yellow]No cached files found for this repo/branch/PR.[/yellow]")
+        input("Press Enter to return to menu...")
+        return
+    while True:
+        action = questionary.select(
+            "Manage Cached Files:",
+            choices=["View file", "Delete file", "Delete all for this branch/PR", "Back"]
+        ).ask()
+        if action == "Back":
+            break
+        elif action == "View file":
+            file_choice = questionary.select("Select file to view:", choices=files).ask()
+            with open(os.path.join(ref_path, file_choice), "r", encoding="utf-8") as f:
+                content = f.read()
+            console.print(f"[bold]{file_choice}[/bold]\n" + content)
+            input("Press Enter to continue...")
+        elif action == "Delete file":
+            file_choice = questionary.select("Select file to delete:", choices=files).ask()
+            os.remove(os.path.join(ref_path, file_choice))
+            files.remove(file_choice)
+            console.print(f"[red]Deleted {file_choice}.[/red]")
+            if not files:
+                console.print("[yellow]No cached files left for this branch/PR.[/yellow]")
+                break
+        elif action == "Delete all for this branch/PR":
+            shutil.rmtree(ref_path)
+            console.print(f"[red]Deleted all cached files for {repo}/{ref}.[/red]")
+            break
     input("Press Enter to return to menu...")
 
 if __name__ == "__main__":
